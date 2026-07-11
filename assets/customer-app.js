@@ -12,6 +12,7 @@
   let currentUser = null;
   let renderTimer = null;
   let presenceTimer = null;
+  let mapInteractionTimer = null;
 
   function customerId(){
     if(currentUser?.customerId) return currentUser.customerId;
@@ -132,12 +133,22 @@
     return el && ['INPUT','TEXTAREA','SELECT'].includes(el.tagName) && el.id !== 'search';
   }
 
+  function isMapBusy(){
+    const map = maps.market;
+    const fullMap = document.getElementById('marketMapCard')?.classList.contains('map-fullscreen');
+    return !!(dropMode || fullMap || map?._omniInteracting);
+  }
+
   function scheduleRender(collection){
     if(!currentUser || !document.getElementById('market')) return;
     if(collection === 'presence' || collection === 'events') return;
     if(isEditingField()) return;
+    if(UI.activeView?.() === 'market' && isMapBusy()) return;
     clearTimeout(renderTimer);
-    renderTimer = setTimeout(render, 180);
+    renderTimer = setTimeout(() => {
+      renderTimer = null;
+      render();
+    }, collection === 'search' ? 220 : 180);
   }
 
   function rows(name){ return (state[name] || []).filter(row => row.deleted !== true); }
@@ -216,7 +227,15 @@
     maps.market = L.map(mapEl).setView([26.0667,50.5577], 11);
     maps.market._omniUserMoved = false;
     maps.market._omniAutoFramed = false;
-    maps.market.on('zoomstart dragstart', () => { maps.market._omniUserMoved = true; });
+    maps.market.on('zoomstart dragstart movestart', () => {
+      maps.market._omniUserMoved = true;
+      maps.market._omniInteracting = true;
+      clearTimeout(mapInteractionTimer);
+    });
+    maps.market.on('zoomend dragend moveend', () => {
+      clearTimeout(mapInteractionTimer);
+      mapInteractionTimer = setTimeout(() => { if(maps.market) maps.market._omniInteracting = false; }, 700);
+    });
     maps.market.on('click', event => {
       if(!dropMode) return;
       setLocation({lat:event.latlng.lat, lng:event.latlng.lng, source:'pin'});
@@ -243,6 +262,15 @@
     }
     const map = ensureMap();
     if(!map) return;
+    const signature = JSON.stringify({
+      location: location ? [Number(location.lat).toFixed(6), Number(location.lng).toFixed(6), location.source || ''] : null,
+      vendors: vendors.filter(v => v.lat && v.lng).map(v => [v.id, Number(v.lat).toFixed(6), Number(v.lng).toFixed(6), v.logo || '', v.shopfront || ''])
+    });
+    if(map._omniMarkerSignature === signature) {
+      setTimeout(() => map.invalidateSize(), 80);
+      return;
+    }
+    map._omniMarkerSignature = signature;
     if(map._omniMarkers) map._omniMarkers.forEach(marker => map.removeLayer(marker));
     map._omniMarkers = [];
     if(location) {
@@ -425,7 +453,7 @@
   function startApp(){
     UI.shell(); UI.bindNav(render); DB.init(UI.setStatus);
     global.OmniConfig.collections.forEach(name => DB.subscribe(name, () => scheduleRender(name), {includeDeleted:true}));
-    document.getElementById('search').oninput = render;
+    document.getElementById('search').oninput = () => scheduleRender('search');
     document.getElementById('locateBtn').onclick = locate;
     document.getElementById('logoutBtn').onclick = () => {
       global.OmniAuth.clearSession();
