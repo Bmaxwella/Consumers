@@ -10,6 +10,8 @@
   let dropMode = false;
   let placingOrder = false;
   let currentUser = null;
+  let renderTimer = null;
+  let presenceTimer = null;
 
   function customerId(){
     if(currentUser?.customerId) return currentUser.customerId;
@@ -32,33 +34,48 @@
   }
 
   function renderAuthGate(){
+    clearInterval(presenceTimer);
+    presenceTimer = null;
     document.getElementById('app').innerHTML = `<main class="auth-screen"><section class="auth-card">
-      <h1>OMNI Market</h1>
-      <p class="muted">Choose how you want to continue. Guests can order, and accounts can keep credit/profile data across devices.</p>
-      <div class="auth-tabs">
-        <button class="btn primary active" data-auth-tab="signup">Sign up</button>
-        <button class="btn" data-auth-tab="login">Login</button>
-        <button class="btn" data-auth-tab="guest">Guest</button>
+      <div class="auth-hero">
+        <div class="brand-mark">OM</div>
+        <div>
+          <h1>OMNI Market</h1>
+          <p>Shop approved local vendors, keep your orders synced, and use credit only when your vendor approves it.</p>
+        </div>
+        <div class="auth-stats">
+          <span><b>Live</b> GUN sync</span>
+          <span><b>Guest</b> ordering</span>
+          <span><b>Credit</b> accounts</span>
+        </div>
       </div>
-      <form id="signupPanel" class="auth-panel active">
-        <div class="form-grid">
-          <div class="field"><label>Name</label><input id="suName" autocomplete="name" required></div>
-          <div class="field"><label>Phone</label><input id="suPhone" inputmode="tel" autocomplete="tel" required></div>
-          <div class="field"><label>Username</label><input id="suUser" autocomplete="username" required></div>
-          <div class="field"><label>Password</label><input id="suPass" type="password" autocomplete="new-password" required></div>
+      <div class="auth-form-card">
+        <div class="auth-tabs">
+          <button class="btn primary active" data-auth-tab="signup">Sign up</button>
+          <button class="btn" data-auth-tab="login">Login</button>
+          <button class="btn" data-auth-tab="guest">Guest</button>
         </div>
-        <button class="btn primary">Create customer account</button>
-      </form>
-      <form id="loginPanel" class="auth-panel">
-        <div class="form-grid">
-          <div class="field"><label>Username</label><input id="liUser" autocomplete="username" required></div>
-          <div class="field"><label>Password</label><input id="liPass" type="password" autocomplete="current-password" required></div>
+        <p class="muted">Choose how you want to continue. Accounts keep profile and credit data across devices.</p>
+        <form id="signupPanel" class="auth-panel active">
+          <div class="form-grid">
+            <div class="field"><label>Name</label><input id="suName" autocomplete="name" required></div>
+            <div class="field"><label>Phone</label><input id="suPhone" inputmode="tel" autocomplete="tel" required></div>
+            <div class="field"><label>Username</label><input id="suUser" autocomplete="username" required></div>
+            <div class="field"><label>Password</label><input id="suPass" type="password" autocomplete="new-password" required></div>
+          </div>
+          <button class="btn primary">Create customer account</button>
+        </form>
+        <form id="loginPanel" class="auth-panel">
+          <div class="form-grid">
+            <div class="field"><label>Username</label><input id="liUser" autocomplete="username" required></div>
+            <div class="field"><label>Password</label><input id="liPass" type="password" autocomplete="current-password" required></div>
+          </div>
+          <button class="btn primary">Login</button>
+        </form>
+        <div id="guestPanel" class="auth-panel">
+          <p class="muted">Continue without an account. Your device will still sync as a guest user so orders can be tracked.</p>
+          <button id="guestBtn" class="btn primary">Continue as guest</button>
         </div>
-        <button class="btn primary">Login</button>
-      </form>
-      <div id="guestPanel" class="auth-panel">
-        <p class="muted">Continue without an account. Your device will still sync as a guest user so orders can be tracked.</p>
-        <button id="guestBtn" class="btn primary">Continue as guest</button>
       </div>
     </section></main>`;
     document.querySelectorAll('[data-auth-tab]').forEach(btn => btn.onclick = () => {
@@ -102,6 +119,25 @@
       online:true,
       updatedAt:Date.now()
     }, {userId:currentUser.userId || currentUser.id}).catch(() => {});
+  }
+
+  function startPresenceSync(){
+    clearInterval(presenceTimer);
+    syncPresence();
+    presenceTimer = setInterval(syncPresence, 30000);
+  }
+
+  function isEditingField(){
+    const el = document.activeElement;
+    return el && ['INPUT','TEXTAREA','SELECT'].includes(el.tagName) && el.id !== 'search';
+  }
+
+  function scheduleRender(collection){
+    if(!currentUser || !document.getElementById('market')) return;
+    if(collection === 'presence' || collection === 'events') return;
+    if(isEditingField()) return;
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(render, 180);
   }
 
   function rows(name){ return (state[name] || []).filter(row => row.deleted !== true); }
@@ -229,29 +265,36 @@
   function renderMarket(){
     const q = (document.getElementById('search')?.value || '').trim().toLowerCase();
     const vendors = visibleVendors().filter(v => vendorMatches(v, q));
-    resetMarketMap();
-    document.getElementById('market').innerHTML = `
+    const market = document.getElementById('market');
+    if(!document.getElementById('marketMap')) {
+      resetMarketMap();
+      market.innerHTML = `
       <div class="toolbar">
         <button id="dropPinBtn" class="btn">Drop pin</button>
         <button id="clearLocationBtn" class="btn ghost" ${location ? '' : 'disabled'}>Clear location</button>
         <button id="fullMapBtn" class="btn ghost">Full screen map</button>
-        <span class="location-note">${U.esc(locationText())}</span>
+        <span id="locationNote" class="location-note"></span>
       </div>
       <div class="grid market-layout">
         <div id="marketMapCard" class="card pad map-card">
-          <div class="head"><h2>Vendor Map</h2><span class="pill">${vendors.length} vendors</span><div class="spacer"></div><button id="closeMapBtn" class="btn danger small map-close">Close</button></div>
+          <div class="head"><h2>Vendor Map</h2><span id="vendorCount" class="pill">0 vendors</span><div class="spacer"></div><button id="closeMapBtn" class="btn danger small map-close">Close</button></div>
           <div id="marketMap" class="market-map"></div>
         </div>
         <div class="card pad"><div class="head"><h2>Nearby List</h2></div><div id="vendorList" class="vendor-list"></div></div>
       </div>
-      <div class="grid cols-3">${vendors.map(vendorCard).join('') || emptyMarket(q)}</div>
+      <div id="marketVendorGrid" class="grid cols-3"></div>
       <div id="vendorMenu"></div>`;
-    document.getElementById('vendorList').innerHTML = vendors.length ? vendors.map(vendorRow).join('') : '<div class="empty">No approved vendors found.</div>';
-    document.querySelectorAll('[data-open-vendor]').forEach(btn => btn.onclick = () => renderVendorMenu(btn.dataset.openVendor));
-    document.getElementById('dropPinBtn').onclick = () => { dropMode = true; UI.toast('Tap the map to drop your delivery location','ok'); ensureMap(); };
+      document.getElementById('dropPinBtn').onclick = () => { dropMode = true; UI.toast('Tap the map to drop your delivery location','ok'); ensureMap(); };
+      document.getElementById('fullMapBtn').onclick = () => { document.getElementById('marketMapCard').classList.add('map-fullscreen'); setTimeout(() => maps.market?.invalidateSize(), 120); };
+      document.getElementById('closeMapBtn').onclick = () => { document.getElementById('marketMapCard').classList.remove('map-fullscreen'); setTimeout(() => maps.market?.invalidateSize(), 120); };
+    }
+    document.getElementById('clearLocationBtn').disabled = !location;
     document.getElementById('clearLocationBtn').onclick = () => { location = null; localStorage.removeItem('omni_v2_customer_location'); if(maps.market){ maps.market._omniAutoFramed = false; maps.market._omniUserMoved = false; } render(); };
-    document.getElementById('fullMapBtn').onclick = () => { document.getElementById('marketMapCard').classList.add('map-fullscreen'); setTimeout(() => maps.market?.invalidateSize(), 120); };
-    document.getElementById('closeMapBtn').onclick = () => { document.getElementById('marketMapCard').classList.remove('map-fullscreen'); setTimeout(() => maps.market?.invalidateSize(), 120); };
+    document.getElementById('locationNote').textContent = locationText();
+    document.getElementById('vendorCount').textContent = `${vendors.length} vendor${vendors.length === 1 ? '' : 's'}`;
+    document.getElementById('vendorList').innerHTML = vendors.length ? vendors.map(vendorRow).join('') : '<div class="empty">No approved vendors found.</div>';
+    document.getElementById('marketVendorGrid').innerHTML = vendors.map(vendorCard).join('') || emptyMarket(q);
+    document.querySelectorAll('[data-open-vendor]').forEach(btn => btn.onclick = () => renderVendorMenu(btn.dataset.openVendor));
     renderMarketMap(vendors);
   }
 
@@ -361,8 +404,8 @@
   }
 
   function render(){
+    if(!currentUser || !document.getElementById('market')) return;
     updateBadge();
-    syncPresence();
     const view = UI.activeView();
     if(view==='market') renderMarket();
     if(view==='cart') renderCart();
@@ -381,19 +424,22 @@
 
   function startApp(){
     UI.shell(); UI.bindNav(render); DB.init(UI.setStatus);
-    global.OmniConfig.collections.forEach(name => DB.subscribe(name, render, {includeDeleted:true}));
+    global.OmniConfig.collections.forEach(name => DB.subscribe(name, () => scheduleRender(name), {includeDeleted:true}));
     document.getElementById('search').oninput = render;
     document.getElementById('locateBtn').onclick = locate;
     document.getElementById('logoutBtn').onclick = () => {
       global.OmniAuth.clearSession();
       currentUser = null;
+      clearTimeout(renderTimer);
+      clearInterval(presenceTimer);
+      presenceTimer = null;
       resetMarketMap();
       renderAuthGate();
     };
     const userMode = document.getElementById('userMode');
     if(userMode) userMode.textContent = currentUser?.role === 'customer' ? `Customer · ${currentUser.displayName || currentUser.username || ''}` : 'Guest mode';
-    window.addEventListener('resize', () => Object.values(maps).forEach(map => map?.invalidateSize()));
-    syncPresence();
+    window.onresize = () => Object.values(maps).forEach(map => map?.invalidateSize());
+    startPresenceSync();
     render();
   }
 
