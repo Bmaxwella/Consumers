@@ -27,7 +27,9 @@
         <div class="mobile-tabs" data-nav><button class="btn primary" data-view="market">Market</button><button class="btn" data-view="cart">Cart</button><button class="btn" data-view="orders">Orders</button><button class="btn" data-view="credit">Credit</button><button class="btn" data-view="profile">Profile</button></div>
         <header class="top">
           <div class="search"><span>⌕</span><input id="search" placeholder="Search vendors, products, services"></div>
+          <span id="userMode" class="pill">Guest</span>
           <button id="locateBtn" class="btn">Use GPS</button>
+          <button id="logoutBtn" class="btn ghost">Switch user</button>
           <button class="btn primary" data-view="cart">Cart <span id="cartBadge" class="badge">0</span></button>
         </header>
         <section class="content">

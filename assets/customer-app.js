@@ -9,8 +9,11 @@
   let location = U.parseJson(localStorage.getItem('omni_v2_customer_location') || 'null', null);
   let dropMode = false;
   let placingOrder = false;
+  let currentUser = null;
 
   function customerId(){
+    if(currentUser?.customerId) return currentUser.customerId;
+    if(currentUser?.role === 'customer' && currentUser.userId) return `customer_${currentUser.userId.replace(/^user_/,'')}`;
     let id = localStorage.getItem('omni_v2_customer_id');
     if(!id){ id = U.uid('customer'); localStorage.setItem('omni_v2_customer_id', id); }
     return id;
@@ -21,11 +24,84 @@
   }
 
   async function saveCustomerProfile(profile){
-    const row = {...profile, id:customerId(), active:true};
+    const row = {...profile, id:customerId(), userId:currentUser?.userId || currentUser?.id || customerId(), active:true};
     if(location) { row.lat = location.lat; row.lng = location.lng; row.locationSource = location.source || 'manual'; }
     localStorage.setItem('omni_v2_customer_profile', JSON.stringify(row));
     await DB.put('customers', row.id, row, {userId:row.userId || row.id});
     return row;
+  }
+
+  function renderAuthGate(){
+    document.getElementById('app').innerHTML = `<main class="auth-screen"><section class="auth-card">
+      <h1>OMNI Market</h1>
+      <p class="muted">Choose how you want to continue. Guests can order, and accounts can keep credit/profile data across devices.</p>
+      <div class="auth-tabs">
+        <button class="btn primary active" data-auth-tab="signup">Sign up</button>
+        <button class="btn" data-auth-tab="login">Login</button>
+        <button class="btn" data-auth-tab="guest">Guest</button>
+      </div>
+      <form id="signupPanel" class="auth-panel active">
+        <div class="form-grid">
+          <div class="field"><label>Name</label><input id="suName" autocomplete="name" required></div>
+          <div class="field"><label>Phone</label><input id="suPhone" inputmode="tel" autocomplete="tel" required></div>
+          <div class="field"><label>Username</label><input id="suUser" autocomplete="username" required></div>
+          <div class="field"><label>Password</label><input id="suPass" type="password" autocomplete="new-password" required></div>
+        </div>
+        <button class="btn primary">Create customer account</button>
+      </form>
+      <form id="loginPanel" class="auth-panel">
+        <div class="form-grid">
+          <div class="field"><label>Username</label><input id="liUser" autocomplete="username" required></div>
+          <div class="field"><label>Password</label><input id="liPass" type="password" autocomplete="current-password" required></div>
+        </div>
+        <button class="btn primary">Login</button>
+      </form>
+      <div id="guestPanel" class="auth-panel">
+        <p class="muted">Continue without an account. Your device will still sync as a guest user so orders can be tracked.</p>
+        <button id="guestBtn" class="btn primary">Continue as guest</button>
+      </div>
+    </section></main>`;
+    document.querySelectorAll('[data-auth-tab]').forEach(btn => btn.onclick = () => {
+      document.querySelectorAll('[data-auth-tab]').forEach(item => item.classList.toggle('active', item === btn));
+      document.querySelectorAll('.auth-panel').forEach(panel => panel.classList.toggle('active', panel.id === `${btn.dataset.authTab}Panel`));
+    });
+    document.getElementById('signupPanel').onsubmit = async event => {
+      event.preventDefault();
+      await runAuth(async () => {
+        const user = await global.OmniAuth.signUpCustomer({name:document.getElementById('suName').value.trim(), phone:document.getElementById('suPhone').value.trim(), username:document.getElementById('suUser').value.trim(), password:document.getElementById('suPass').value, customerId:customerId()});
+        await saveCustomerProfile({name:document.getElementById('suName').value.trim(), phone:document.getElementById('suPhone').value.trim(), defaultAddress:customerProfile().defaultAddress || ''});
+        return user;
+      });
+    };
+    document.getElementById('loginPanel').onsubmit = async event => {
+      event.preventDefault();
+      await runAuth(() => global.OmniAuth.login(document.getElementById('liUser').value.trim(), document.getElementById('liPass').value));
+    };
+    document.getElementById('guestBtn').onclick = () => runAuth(() => global.OmniAuth.continueAsGuest(customerId()));
+  }
+
+  async function runAuth(action){
+    try {
+      currentUser = await action();
+      startApp();
+    } catch(error) {
+      UI.toast(error.message || 'Could not continue','bad');
+    }
+  }
+
+  function syncPresence(){
+    if(!currentUser) return;
+    DB.put('presence', currentUser.userId || currentUser.id, {
+      id:currentUser.userId || currentUser.id,
+      userId:currentUser.userId || currentUser.id,
+      customerId:customerId(),
+      username:currentUser.username || '',
+      role:currentUser.role || 'guest',
+      mode:'customer',
+      view:UI.activeView?.() || 'market',
+      online:true,
+      updatedAt:Date.now()
+    }, {userId:currentUser.userId || currentUser.id}).catch(() => {});
   }
 
   function rows(name){ return (state[name] || []).filter(row => row.deleted !== true); }
@@ -85,14 +161,23 @@
     });
   }
 
+  function resetMarketMap(){
+    if(!maps.market) return;
+    try { maps.market.remove(); } catch {}
+    maps.market = null;
+  }
+
   function ensureMap(){
-    if(maps.market) { maps.market.invalidateSize(); return maps.market; }
+    const mapEl = document.getElementById('marketMap');
+    if(!mapEl || !global.L) return null;
+    if(maps.market && maps.market.getContainer && maps.market.getContainer() === mapEl) { maps.market.invalidateSize(); return maps.market; }
+    if(maps.market) resetMarketMap();
     L.Icon.Default.mergeOptions({
       iconRetinaUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
       iconUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
       shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png'
     });
-    maps.market = L.map('marketMap').setView([26.0667,50.5577], 11);
+    maps.market = L.map(mapEl).setView([26.0667,50.5577], 11);
     maps.market._omniUserMoved = false;
     maps.market._omniAutoFramed = false;
     maps.market.on('zoomstart dragstart', () => { maps.market._omniUserMoved = true; });
@@ -115,8 +200,13 @@
 
   function renderMarketMap(vendors){
     const mapEl = document.getElementById('marketMap');
-    if(!mapEl || !global.L) return;
+    if(!mapEl) return;
+    if(!global.L) {
+      mapEl.innerHTML = '<div class="empty">Map library is still loading. Refresh if it does not appear.</div>';
+      return;
+    }
     const map = ensureMap();
+    if(!map) return;
     if(map._omniMarkers) map._omniMarkers.forEach(marker => map.removeLayer(marker));
     map._omniMarkers = [];
     if(location) {
@@ -139,6 +229,7 @@
   function renderMarket(){
     const q = (document.getElementById('search')?.value || '').trim().toLowerCase();
     const vendors = visibleVendors().filter(v => vendorMatches(v, q));
+    resetMarketMap();
     document.getElementById('market').innerHTML = `
       <div class="toolbar">
         <button id="dropPinBtn" class="btn">Drop pin</button>
@@ -271,6 +362,7 @@
 
   function render(){
     updateBadge();
+    syncPresence();
     const view = UI.activeView();
     if(view==='market') renderMarket();
     if(view==='cart') renderCart();
@@ -287,13 +379,30 @@
     }, err => UI.toast(err.message || 'Location denied','bad'), {enableHighAccuracy:true, timeout:12000, maximumAge:60000});
   }
 
-  function boot(){
+  function startApp(){
     UI.shell(); UI.bindNav(render); DB.init(UI.setStatus);
     global.OmniConfig.collections.forEach(name => DB.subscribe(name, render, {includeDeleted:true}));
     document.getElementById('search').oninput = render;
     document.getElementById('locateBtn').onclick = locate;
+    document.getElementById('logoutBtn').onclick = () => {
+      global.OmniAuth.clearSession();
+      currentUser = null;
+      resetMarketMap();
+      renderAuthGate();
+    };
+    const userMode = document.getElementById('userMode');
+    if(userMode) userMode.textContent = currentUser?.role === 'customer' ? `Customer · ${currentUser.displayName || currentUser.username || ''}` : 'Guest mode';
     window.addEventListener('resize', () => Object.values(maps).forEach(map => map?.invalidateSize()));
+    syncPresence();
     render();
   }
+
+  function boot(){
+    DB.init(UI.setStatus);
+    currentUser = global.OmniAuth.savedSession();
+    if(currentUser) startApp();
+    else renderAuthGate();
+  }
+
   boot();
 })(window);
