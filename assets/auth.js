@@ -1,10 +1,17 @@
 (function(global){
   'use strict';
 
-  const KEY = 'omni_v2_session';
+  const KEY = 'omni_v2_customer_session';
+  const LEGACY_KEY = 'omni_v2_session';
+  const ALLOWED_ROLES = new Set(['customer','guest']);
 
   function savedSession(){
-    return global.OmniUtils.parseJson(localStorage.getItem(KEY) || 'null', null);
+    const saved = global.OmniUtils.parseJson(localStorage.getItem(KEY) || 'null', null);
+    if(saved && ALLOWED_ROLES.has(saved.role)) return saved;
+    const legacy = global.OmniUtils.parseJson(localStorage.getItem(LEGACY_KEY) || 'null', null);
+    if(!legacy || !ALLOWED_ROLES.has(legacy.role)) return null;
+    localStorage.setItem(KEY, JSON.stringify(legacy));
+    return legacy;
   }
 
   function saveSession(user){
@@ -13,6 +20,8 @@
 
   function clearSession(){
     localStorage.removeItem(KEY);
+    const legacy = global.OmniUtils.parseJson(localStorage.getItem(LEGACY_KEY) || 'null', null);
+    if(legacy && ALLOWED_ROLES.has(legacy.role)) localStorage.removeItem(LEGACY_KEY);
   }
 
   function userIdFor(username){

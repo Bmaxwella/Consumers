@@ -5,7 +5,10 @@
   const UI = global.CustomerUI;
   const Cart = global.CustomerCart;
   const state = DB.state.cache;
-  const maps = { market:null };
+  const maps = { market:null, delivery:null, profile:null };
+  let deliveryDriverMarker = null;
+  let deliveryDestinationMarker = null;
+  let deliveryRoute = null;
   let location = U.parseJson(localStorage.getItem('omni_v2_customer_location') || 'null', null);
   let dropMode = false;
   let placingOrder = false;
@@ -13,6 +16,9 @@
   let renderTimer = null;
   let presenceTimer = null;
   let mapInteractionTimer = null;
+  let liveUnsubscribers = [];
+  const pendingRenders = new Set();
+  const CUSTOMER_COLLECTIONS = ['publicVendors','orders','creditAccounts','vendorCreditSettings','customers','customerLocations','deliveryAssignments'];
 
   function customerId(){
     if(currentUser?.customerId) return currentUser.customerId;
@@ -45,7 +51,7 @@
           <p>Shop approved local vendors, keep your orders synced, and use credit only when your vendor approves it.</p>
         </div>
         <div class="auth-stats">
-          <span><b>Live</b> GUN sync</span>
+          <span><b>Live</b> order updates</span>
           <span><b>Guest</b> ordering</span>
           <span><b>Credit</b> accounts</span>
         </div>
@@ -74,7 +80,7 @@
           <button class="btn primary">Login</button>
         </form>
         <div id="guestPanel" class="auth-panel">
-          <p class="muted">Continue without an account. Your device will still sync as a guest user so orders can be tracked.</p>
+          <p class="muted">Continue without an account. Orders placed on this device can still be tracked here.</p>
           <button id="guestBtn" class="btn primary">Continue as guest</button>
         </div>
       </div>
@@ -139,15 +145,51 @@
     return !!(dropMode || fullMap || map?._omniInteracting);
   }
 
+  function viewUsesCollection(collection){
+    const view = UI.activeView?.() || 'market';
+    const dependencies = {
+      market: new Set(['publicVendors']),
+      cart: new Set(),
+      orders: new Set(['orders','deliveryAssignments']),
+      credit: new Set(['creditAccounts','vendorCreditSettings','publicVendors']),
+      profile: new Set(['customers'])
+    };
+    return collection === 'search' || collection === 'deferred' || dependencies[view]?.has(collection);
+  }
+
+  function flushPendingRender(){
+    if(!pendingRenders.size || isEditingField() || isMapBusy()) return;
+    pendingRenders.clear();
+    scheduleRender('deferred');
+  }
+
+  function captureViewFields(view){
+    const container = document.getElementById(view);
+    if(!container) return [];
+    return [...container.querySelectorAll('input[id],select[id],textarea[id]')].map(field => ({id:field.id, value:field.value, checked:field.checked}));
+  }
+
+  function restoreViewFields(fields){
+    fields.forEach(saved => {
+      const field = document.getElementById(saved.id);
+      if(!field) return;
+      field.value = saved.value;
+      if(field.type === 'checkbox' || field.type === 'radio') field.checked = saved.checked;
+    });
+  }
+
   function scheduleRender(collection){
     if(!currentUser || !document.getElementById('market')) return;
     if(collection === 'presence' || collection === 'events') return;
-    if(isEditingField()) return;
-    if(UI.activeView?.() === 'market' && isMapBusy()) return;
+    if(!viewUsesCollection(collection)) return;
+    if(isEditingField() || (UI.activeView?.() === 'market' && isMapBusy())) {
+      pendingRenders.add(collection);
+      return;
+    }
     clearTimeout(renderTimer);
     renderTimer = setTimeout(() => {
       renderTimer = null;
-      render();
+      render(true);
     }, collection === 'search' ? 220 : 180);
   }
 
@@ -159,6 +201,17 @@
     return rows('products').filter(p => p.vendorId === vendor.id && p.active !== false);
   }
 
+  function productImages(product={}){
+    const saved = U.parseJson(product.imagesJson || '[]', []);
+    const images = [product.image || '', ...(Array.isArray(saved) ? saved : [])].filter(source => typeof source === 'string' && (/^https?:\/\//i.test(source) || /^data:image\//i.test(source)));
+    return [...new Set(images)].slice(0,3);
+  }
+
+  function productAttributes(product={}){
+    const saved = U.parseJson(product.attributesJson || '[]', []);
+    return Array.isArray(saved) ? saved.filter(item => item && (item.name || item.value)).slice(0,6) : [];
+  }
+
   function approvedVendor(v){
     return v && v.active !== false && v.suspended !== true && (
       (v.public === true && v.status === 'approved') ||
@@ -168,10 +221,7 @@
   }
 
   function sourceVendors(){
-    const merged = new Map();
-    rows('vendors').forEach(v => merged.set(v.id, v));
-    rows('publicVendors').forEach(v => merged.set(v.id, {...(merged.get(v.id) || {}), ...v}));
-    return [...merged.values()];
+    return rows('publicVendors');
   }
 
   function visibleVendors(){
@@ -193,7 +243,7 @@
     if(!query) return true;
     const products = parseProducts(v);
     return `${v.crName || ''} ${v.businessType || ''} ${v.whatsapp || ''}`.toLowerCase().includes(query)
-      || products.some(p => `${p.name || ''} ${p.category || ''} ${p.description || ''}`.toLowerCase().includes(query));
+      || products.some(p => `${p.name || ''} ${p.category || ''} ${p.description || ''} ${p.attributesJson || ''} ${p.sku || ''} ${p.barcode || ''}`.toLowerCase().includes(query));
   }
 
   function vendorIcon(v){
@@ -212,6 +262,12 @@
     if(!maps.market) return;
     try { maps.market.remove(); } catch {}
     maps.market = null;
+  }
+
+  function resetDeliveryMap(){
+    if(!maps.delivery) return;
+    try { maps.delivery.remove(); } catch {}
+    maps.delivery=null; deliveryDriverMarker=null; deliveryDestinationMarker=null; deliveryRoute=null;
   }
 
   function ensureMap(){
@@ -234,13 +290,17 @@
     });
     maps.market.on('zoomend dragend moveend', () => {
       clearTimeout(mapInteractionTimer);
-      mapInteractionTimer = setTimeout(() => { if(maps.market) maps.market._omniInteracting = false; }, 700);
+      mapInteractionTimer = setTimeout(() => {
+        if(maps.market) maps.market._omniInteracting = false;
+        flushPendingRender();
+      }, 700);
     });
     maps.market.on('click', event => {
       if(!dropMode) return;
-      setLocation({lat:event.latlng.lat, lng:event.latlng.lng, source:'pin'});
       dropMode = false;
+      setLocation({lat:event.latlng.lat, lng:event.latlng.lng, source:'pin'});
       UI.toast('Location pin dropped','ok');
+      flushPendingRender();
     });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'&copy; OpenStreetMap contributors'}).addTo(maps.market);
     return maps.market;
@@ -250,7 +310,13 @@
     location = next;
     localStorage.setItem('omni_v2_customer_location', JSON.stringify(next));
     if(maps.market) { maps.market._omniUserMoved = false; maps.market._omniAutoFramed = false; }
-    render();
+    if(UI.activeView?.() === 'market') renderMarket();
+    ['checkoutLocationNote','profileLocationNote'].forEach(id => {
+      const note = document.getElementById(id);
+      if(note) note.textContent = locationText();
+    });
+    if(UI.activeView?.()==='profile') renderProfileLocationMap();
+    if(currentUser) saveCustomerProfile(customerProfile()).catch(() => {});
   }
 
   function renderMarketMap(vendors){
@@ -290,9 +356,27 @@
     setTimeout(() => map.invalidateSize(), 80);
   }
 
+  function vendorDirectMatch(vendor,query){
+    return !query || `${vendor.crName||''} ${vendor.businessType||''} ${vendor.whatsapp||''}`.toLowerCase().includes(query);
+  }
+
+  function matchingProducts(vendor,query){
+    if(!query) return [];
+    return parseProducts(vendor).filter(product=>product.active!==false&&`${product.name||''} ${product.category||''} ${product.description||''} ${product.attributesJson||''} ${product.sku||''} ${product.barcode||''}`.toLowerCase().includes(query));
+  }
+
+  function marketProductCard(result){
+    const {product,vendor}=result, image=productImages(product)[0]||imageFor(product.name||'Product'), unavailable=product.stockMode==='track'&&Number(product.stockQty||0)<=0;
+    return `<article class="card market-product-result"><img src="${U.esc(image)}" alt="${U.esc(product.name||'Product')}"><div><span class="product-category">${U.esc(product.category||'Product')}</span><h3>${U.esc(product.name)}</h3><p>${U.esc(vendor.crName||'Vendor')} · ${U.esc(distanceText(vendor))}</p><b>${U.money(product.price)}</b><div><button class="btn" data-open-vendor="${U.esc(vendor.id)}">View vendor</button><button class="btn primary" data-market-product="${U.esc(product.id)}" data-market-vendor="${U.esc(vendor.id)}" ${unavailable?'disabled':''}>${unavailable?'Out of stock':'Add'}</button></div></div></article>`;
+  }
+
   function renderMarket(){
     const q = (document.getElementById('search')?.value || '').trim().toLowerCase();
-    const vendors = visibleVendors().filter(v => vendorMatches(v, q));
+    const allVendors = visibleVendors();
+    const vendorResults = q ? allVendors.filter(vendor=>vendorDirectMatch(vendor,q)) : allVendors;
+    const productResults = q ? allVendors.flatMap(vendor=>matchingProducts(vendor,q).map(product=>({vendor,product}))).sort((a,b)=>{const distanceA=location?U.distanceKm(location,a.vendor):Infinity,distanceB=location?U.distanceKm(location,b.vendor):Infinity;return distanceA-distanceB||String(a.product.name||'').localeCompare(String(b.product.name||''));}) : [];
+    const resultVendorIds = new Set([...vendorResults.map(vendor=>vendor.id),...productResults.map(result=>result.vendor.id)]);
+    const vendors = q ? allVendors.filter(vendor=>resultVendorIds.has(vendor.id)) : allVendors;
     const market = document.getElementById('market');
     if(!document.getElementById('marketMap')) {
       resetMarketMap();
@@ -310,19 +394,31 @@
         </div>
         <div class="card pad"><div class="head"><h2>Nearby List</h2></div><div id="vendorList" class="vendor-list"></div></div>
       </div>
+      <div id="marketSearchResults"></div>
       <div id="marketVendorGrid" class="grid cols-3"></div>
       <div id="vendorMenu"></div>`;
-      document.getElementById('dropPinBtn').onclick = () => { dropMode = true; UI.toast('Tap the map to drop your delivery location','ok'); ensureMap(); };
+      document.getElementById('dropPinBtn').onclick = event => {
+        dropMode = !dropMode;
+        event.currentTarget.textContent = dropMode ? 'Cancel pin' : 'Drop pin';
+        UI.toast(dropMode ? 'Tap the map to drop your delivery location' : 'Pin placement cancelled', dropMode ? 'ok' : '');
+        ensureMap();
+        if(!dropMode) flushPendingRender();
+      };
       document.getElementById('fullMapBtn').onclick = () => { document.getElementById('marketMapCard').classList.add('map-fullscreen'); setTimeout(() => maps.market?.invalidateSize(), 120); };
-      document.getElementById('closeMapBtn').onclick = () => { document.getElementById('marketMapCard').classList.remove('map-fullscreen'); setTimeout(() => maps.market?.invalidateSize(), 120); };
+      document.getElementById('closeMapBtn').onclick = () => {
+        document.getElementById('marketMapCard').classList.remove('map-fullscreen');
+        setTimeout(() => { maps.market?.invalidateSize(); flushPendingRender(); }, 120);
+      };
     }
     document.getElementById('clearLocationBtn').disabled = !location;
-    document.getElementById('clearLocationBtn').onclick = () => { location = null; localStorage.removeItem('omni_v2_customer_location'); if(maps.market){ maps.market._omniAutoFramed = false; maps.market._omniUserMoved = false; } render(); };
+    document.getElementById('clearLocationBtn').onclick = () => { location = null; localStorage.removeItem('omni_v2_customer_location'); const profile={...customerProfile(),lat:0,lng:0,locationSource:''}; localStorage.setItem('omni_v2_customer_profile',JSON.stringify(profile)); DB.put('customers',customerId(),profile,{userId:currentUser?.userId||currentUser?.id||customerId()}).catch(()=>{}); if(maps.market){ maps.market._omniAutoFramed = false; maps.market._omniUserMoved = false; } render(); };
     document.getElementById('locationNote').textContent = locationText();
     document.getElementById('vendorCount').textContent = `${vendors.length} vendor${vendors.length === 1 ? '' : 's'}`;
     document.getElementById('vendorList').innerHTML = vendors.length ? vendors.map(vendorRow).join('') : '<div class="empty">No approved vendors found.</div>';
-    document.getElementById('marketVendorGrid').innerHTML = vendors.map(vendorCard).join('') || emptyMarket(q);
+    document.getElementById('marketSearchResults').innerHTML = q&&productResults.length?`<section class="market-result-section"><div class="head"><h2>Matching products & services</h2><span class="pill">${productResults.length}</span></div><div class="market-product-results">${productResults.map(marketProductCard).join('')}</div></section>`:'';
+    document.getElementById('marketVendorGrid').innerHTML = `${q&&vendorResults.length?`<div class="market-result-heading"><h2>Matching vendors</h2><span class="pill">${vendorResults.length}</span></div>`:''}${vendorResults.map(vendorCard).join('') || (!productResults.length?emptyMarket(q):'')}`;
     document.querySelectorAll('[data-open-vendor]').forEach(btn => btn.onclick = () => renderVendorMenu(btn.dataset.openVendor));
+    document.querySelectorAll('[data-market-product]').forEach(btn=>btn.onclick=()=>{const vendor=vendorById(btn.dataset.marketVendor),product=vendor&&parseProducts(vendor).find(item=>item.id===btn.dataset.marketProduct);if(product&&Cart.add(product,vendor)){UI.toast('Added to cart','ok');updateBadge();}});
     renderMarketMap(vendors);
   }
 
@@ -342,7 +438,10 @@
   function renderVendorMenu(vendorId){
     const vendor = vendorById(vendorId);
     const products = vendor ? parseProducts(vendor).filter(p => p.active !== false) : [];
-    document.getElementById('vendorMenu').innerHTML = `<div class="card pad" style="margin-top:18px"><div class="head"><h2>${U.esc(vendor?.crName || 'Menu')}</h2><span class="pill">${products.length} items</span><div class="spacer"></div><button class="btn ghost small" data-close-menu>Close</button></div><div class="product-grid">${products.map(p=>`<article class="card product"><img src="${U.esc(p.image || imageFor(p.name || 'Product'))}" alt="${U.esc(p.name || 'Product')}"><div class="body"><h3>${U.esc(p.name)}</h3><p class="muted">${U.esc(p.category || p.description || 'Product')}</p><b>${U.money(p.price)}</b><button class="btn primary" data-add="${U.esc(p.id)}">Add to cart</button></div></article>`).join('') || '<div class="empty">No products yet.</div>'}</div></div>`;
+    document.getElementById('vendorMenu').innerHTML = `<div class="card pad vendor-menu-panel"><div class="head"><h2>${U.esc(vendor?.crName || 'Menu')}</h2><span class="pill">${products.length} items</span><div class="spacer"></div><button class="btn ghost small" data-close-menu>Close</button></div><div class="product-grid">${products.map(product=>{
+      const images=productImages(product); const attributes=productAttributes(product); const main=images[0]||imageFor(product.name||'Product'); const unavailable=product.stockMode==='track'&&Number(product.stockQty||0)<=0;
+      return `<article class="card product customer-product"><div class="customer-product-media"><img class="customer-product-primary" src="${U.esc(main)}" alt="${U.esc(product.name||'Product')}">${images.length>1?`<div class="customer-product-thumbs">${images.slice(1).map(source=>`<img src="${U.esc(source)}" alt="">`).join('')}</div>`:''}${product.featured===true?'<span class="product-featured">Featured</span>':''}</div><div class="body"><span class="product-category">${U.esc(product.category||'General')}</span><h3>${U.esc(product.name)}</h3><p class="muted">${U.esc(product.description||'')}</p><div class="attribute-chips">${attributes.map(item=>`<span>${U.esc(item.name)}: ${U.esc(item.value)}</span>`).join('')}</div><div class="customer-product-price"><b>${U.money(product.price)}</b>${Number(product.compareAtPrice||0)>Number(product.price||0)?`<s>${U.money(product.compareAtPrice)}</s>`:''}<span>${U.esc(product.unit||'each')}</span></div><button class="btn primary" data-add="${U.esc(product.id)}" ${unavailable?'disabled':''}>${unavailable?'Out of stock':'Add to cart'}</button></div></article>`;
+    }).join('') || '<div class="empty">No products yet.</div>'}</div></div>`;
     document.querySelector('[data-close-menu]').onclick = () => { document.getElementById('vendorMenu').innerHTML = ''; };
     document.querySelectorAll('[data-add]').forEach(btn => btn.onclick = () => {
       const product = products.find(p=>p.id===btn.dataset.add);
@@ -353,7 +452,11 @@
 
   function renderCart(){
     const p = customerProfile();
-    document.getElementById('cart').innerHTML = `<div class="grid split"><div class="card pad"><div class="head"><h2>Your Cart</h2><span class="pill">${Cart.lines.length} lines</span></div>${Cart.lines.map(line=>`<div class="cart-line"><span>${U.esc(line.name)} x ${line.qty}</span><button class="btn small danger" data-remove="${U.esc(line.productId)}">−</button><b>${U.money(line.price*line.qty)}</b></div>`).join('') || '<div class="empty">Cart is empty</div>'}<div class="total"><span>Total</span><span>${U.money(Cart.total())}</span></div></div><div class="card pad"><h2>Checkout</h2><div class="form"><div class="field"><label>Name</label><input id="coName" autocomplete="name" value="${U.esc(p.name||'')}"></div><div class="field"><label>Phone</label><input id="coPhone" inputmode="tel" autocomplete="tel" value="${U.esc(p.phone||'')}"></div><div class="field"><label>Address</label><textarea id="coAddress">${U.esc(p.defaultAddress||'')}</textarea></div><div class="location-note">${U.esc(locationText())}</div><div class="toolbar"><button id="checkoutGpsBtn" class="btn" type="button">Use GPS</button><button id="checkoutPinBtn" class="btn ghost" type="button">Drop pin on map</button></div><select id="coPayment" class="input"><option value="cash">Cash</option><option value="benefit">Benefit</option><option value="credit">Credit</option></select><button id="placeOrderBtn" class="btn primary">Place order</button></div></div></div>`;
+    const draft = U.parseJson(localStorage.getItem('omni_v2_checkout_draft') || '{}', {});
+    const payment = draft.paymentMethod || 'cash';
+    document.getElementById('cart').innerHTML = `<div class="grid split"><div class="card pad"><div class="head"><h2>Your Cart</h2><span class="pill">${Cart.lines.length} lines</span></div>${Cart.lines.map(line=>`<div class="cart-line"><span>${U.esc(line.name)} x ${line.qty}</span><button class="btn small danger" data-remove="${U.esc(line.productId)}">−</button><b>${U.money(line.price*line.qty)}</b></div>`).join('') || '<div class="empty">Cart is empty</div>'}<div class="total"><span>Total</span><span>${U.money(Cart.total())}</span></div></div><div class="card pad"><h2>Checkout</h2><div class="form"><div class="field"><label>Name</label><input id="coName" autocomplete="name" value="${U.esc(draft.name ?? p.name ?? '')}"></div><div class="field"><label>Phone</label><input id="coPhone" inputmode="tel" autocomplete="tel" value="${U.esc(draft.phone ?? p.phone ?? '')}"></div><div class="field"><label>Address</label><textarea id="coAddress">${U.esc(draft.defaultAddress ?? p.defaultAddress ?? '')}</textarea></div><div id="checkoutLocationNote" class="location-note">${U.esc(locationText())}</div><div class="toolbar"><button id="checkoutGpsBtn" class="btn" type="button">Use GPS</button><button id="checkoutPinBtn" class="btn ghost" type="button">Drop pin on map</button></div><select id="coPayment" class="input"><option value="cash" ${payment==='cash'?'selected':''}>Cash</option><option value="benefit" ${payment==='benefit'?'selected':''}>Benefit</option><option value="credit" ${payment==='credit'?'selected':''}>Credit</option></select><button id="placeOrderBtn" class="btn primary">Place order</button></div></div></div>`;
+    const saveDraft = () => localStorage.setItem('omni_v2_checkout_draft', JSON.stringify({name:document.getElementById('coName').value, phone:document.getElementById('coPhone').value, defaultAddress:document.getElementById('coAddress').value, paymentMethod:document.getElementById('coPayment').value}));
+    ['coName','coPhone','coAddress','coPayment'].forEach(id => document.getElementById(id).addEventListener('input', saveDraft));
     document.querySelectorAll('[data-remove]').forEach(btn => btn.onclick = () => { Cart.remove(btn.dataset.remove); updateBadge(); renderCart(); });
     document.getElementById('checkoutGpsBtn').onclick = locate;
     document.getElementById('checkoutPinBtn').onclick = () => { document.querySelector('[data-view="market"]').click(); setTimeout(() => document.getElementById('dropPinBtn')?.click(), 80); };
@@ -368,9 +471,14 @@
     if(!profile.defaultAddress && !location) return UI.toast('Add an address, use GPS, or drop a pin for delivery','bad');
     const paymentMethod = document.getElementById('coPayment').value;
     if(paymentMethod === 'credit') {
-      const account = rows('creditAccounts').find(c => c.vendorId === Cart.lines[0].vendorId && c.status === 'active' && (c.customerId === profile.id || c.phone === profile.phone));
-      if(!account) return UI.toast('Credit is not active for this vendor yet','bad');
-      if(Number(account.balance || 0) + Cart.total() > Number(account.creditLimit || 0)) return UI.toast('This order exceeds your credit limit','bad');
+      const currentVendorId=Cart.lines[0].vendorId;
+      const policy=rows('vendorCreditSettings').find(setting=>setting.vendorId===currentVendorId)||{enabled:true,maximumCreditLimit:0};
+      const account = rows('creditAccounts').find(c => c.vendorId === currentVendorId && c.status === 'active' && c.adminApproved === true && (c.customerId === profile.id || c.phone === profile.phone));
+      if(policy.enabled===false) return UI.toast('This vendor currently has customer credit disabled','bad');
+      if(policy.allowDeliveryCredit===false) return UI.toast('This vendor does not allow credit for delivery orders','bad');
+      if(!account) return UI.toast('Credit must be approved by this vendor before checkout','bad');
+      const effectiveLimit=Number(policy.maximumCreditLimit||0)>0?Math.min(Number(account.creditLimit||0),Number(policy.maximumCreditLimit)):Number(account.creditLimit||0);
+      if(Number(account.balance || 0) + Cart.total() > effectiveLimit) return UI.toast('This order exceeds your approved credit limit','bad');
     }
     placingOrder = true;
     const submit = document.getElementById('placeOrderBtn');
@@ -386,7 +494,7 @@
       for(const line of Cart.lines) await DB.put('orderItems', U.uid('item'), {orderId, vendorId, productId:line.productId, nameSnapshot:line.name, priceSnapshot:line.price, qty:line.qty, total:line.price*line.qty}, {userId:profile.id, vendorId});
       await DB.event('customer_order_created','order',orderId,{vendorId, summary:`Customer order ${U.money(order.total)}`},{userId:profile.id, vendorId});
       const ids = U.parseJson(localStorage.getItem('omni_v2_order_ids') || '[]', []); ids.push(orderId); localStorage.setItem('omni_v2_order_ids', JSON.stringify(ids));
-      Cart.clear(); updateBadge(); UI.toast('Order placed and synced','ok'); renderOrders();
+      Cart.clear(); localStorage.removeItem('omni_v2_checkout_draft'); updateBadge(); UI.toast('Order placed and synced','ok'); renderOrders();
       document.querySelector('[data-view="orders"]').click();
     } catch(error) {
       UI.toast(error.message || 'Order could not be saved','bad');
@@ -396,10 +504,32 @@
     }
   }
 
+  function renderCustomerDeliveryMap(order,assignment){
+    const element=document.getElementById('customerDeliveryMap');
+    if(!element||!global.L||!order||!assignment)return;
+    if(!maps.delivery||maps.delivery.getContainer()!==element){resetDeliveryMap();maps.delivery=L.map(element).setView([26.0667,50.5577],12);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'}).addTo(maps.delivery);maps.delivery._autoFramed=false;}
+    const destination=Number(order.customerLat)&&Number(order.customerLng)?L.latLng(Number(order.customerLat),Number(order.customerLng)):null;
+    const driver=Number(assignment.driverLat)&&Number(assignment.driverLng)?L.latLng(Number(assignment.driverLat),Number(assignment.driverLng)):null;
+    if(destination){if(!deliveryDestinationMarker)deliveryDestinationMarker=L.marker(destination).addTo(maps.delivery).bindPopup('Delivery destination');else deliveryDestinationMarker.setLatLng(destination);}
+    if(driver){if(!deliveryDriverMarker)deliveryDriverMarker=L.circleMarker(driver,{radius:10,color:'#102841',fillColor:'#1fc996',fillOpacity:1,weight:3}).addTo(maps.delivery).bindPopup(`${U.esc(assignment.driverName||'Driver')} · live location`);else deliveryDriverMarker.setLatLng(driver);}
+    if(deliveryRoute){try{maps.delivery.removeLayer(deliveryRoute);}catch{}deliveryRoute=null;}
+    if(driver&&destination)deliveryRoute=L.polyline([driver,destination],{color:'#2563eb',weight:5,opacity:.78,dashArray:'8 7'}).addTo(maps.delivery);
+    if(!maps.delivery._autoFramed){if(driver&&destination)maps.delivery.fitBounds(L.latLngBounds([driver,destination]).pad(.2));else if(destination)maps.delivery.setView(destination,14);maps.delivery._autoFramed=true;}
+    setTimeout(()=>maps.delivery?.invalidateSize(),80);
+  }
+
+  function activeCustomerDelivery(myOrders){
+    const ids=new Set(myOrders.map(order=>order.id));
+    return rows('deliveryAssignments').find(assignment=>ids.has(assignment.orderId)&&['accepted','picked_up'].includes(assignment.status))||null;
+  }
+
   function renderOrders(){
     const ids = U.parseJson(localStorage.getItem('omni_v2_order_ids') || '[]', []);
     const myOrders = rows('orders').filter(o => ids.includes(o.id) || o.customerId === customerId()).sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0));
-    document.getElementById('orders').innerHTML = `<div class="card pad"><div class="head"><h2>My Orders</h2></div>${UI.table(myOrders, [{key:'id',label:'Order'}, {key:'status',label:'Status'}, {key:'paymentMethod',label:'Payment'}, {key:'total',label:'Total',format:r=>U.money(r.total)}, {key:'customerAddress',label:'Address'}, {key:'createdAt',label:'Placed',format:r=>r.createdAt?new Date(Number(r.createdAt)).toLocaleString():'-'}])}</div>`;
+    const assignment=activeCustomerDelivery(myOrders),trackedOrder=assignment&&myOrders.find(order=>order.id===assignment.orderId);
+    if(!assignment) resetDeliveryMap();
+    document.getElementById('orders').innerHTML = `${assignment&&trackedOrder?`<section class="card pad customer-delivery-card"><div class="head"><div><span class="product-category">Live delivery</span><h2>${U.esc(assignment.driverName||'Your driver is on the way')}</h2><p class="muted">${assignment.driverPhone?`Driver phone: ${U.esc(assignment.driverPhone)} · `:''}${assignment.locationUpdatedAt?`Updated ${new Date(Number(assignment.locationUpdatedAt)).toLocaleTimeString()}`:'Waiting for the first location update'}</p></div><span class="pill ok">Out for delivery</span></div><div id="customerDeliveryMap" class="customer-delivery-map"></div></section>`:''}<div class="card pad"><div class="head"><h2>My Orders</h2></div>${UI.table(myOrders, [{key:'id',label:'Order'}, {key:'status',label:'Status'}, {key:'paymentMethod',label:'Payment'}, {key:'total',label:'Total',format:r=>U.money(r.total)}, {key:'customerAddress',label:'Address'}, {key:'createdAt',label:'Placed',format:r=>r.createdAt?new Date(Number(r.createdAt)).toLocaleString():'-'}])}</div>`;
+    if(assignment&&trackedOrder) renderCustomerDeliveryMap(trackedOrder,assignment);
   }
 
   function renderCredit(){
@@ -413,7 +543,7 @@
       if(!vendorId || !phone) return UI.toast('Choose a vendor and add your phone','bad');
       if(accounts.some(a=>a.vendorId===vendorId && a.status!=='rejected')) return UI.toast('A credit account or request already exists for this vendor','bad');
       try {
-        await DB.put('creditAccounts', U.uid('credit'), {vendorId, customerId:customerId(), phone, status:'pending', creditLimit:0, balance:0}, {userId:customerId(), vendorId});
+        await DB.put('creditAccounts', U.uid('credit'), {vendorId, customerId:customerId(), customerName:profile.name||'', phone, status:'pending', adminApproved:false, creditLimit:0, balance:0}, {userId:customerId(), vendorId});
         UI.toast('Credit request sent','ok');
       } catch(error) { UI.toast(error.message || 'Request could not be saved','bad'); }
     };
@@ -421,7 +551,8 @@
 
   function renderProfile(){
     const p = customerProfile();
-    document.getElementById('profile').innerHTML = `<div class="card pad"><div class="head"><h2>Profile</h2><span class="pill">Optional account</span></div><div class="form-grid"><div class="field"><label>Name</label><input id="pName" value="${U.esc(p.name||'')}"></div><div class="field"><label>Phone</label><input id="pPhone" value="${U.esc(p.phone||'')}"></div><div class="field full"><label>Address</label><textarea id="pAddress">${U.esc(p.defaultAddress||'')}</textarea></div><div class="full location-note">${U.esc(locationText())}</div><button id="profileGpsBtn" class="btn full" type="button">Use GPS location</button><button id="saveProfileBtn" class="btn primary full">Save profile</button></div></div>`;
+    document.getElementById('profile').innerHTML = `<div class="card pad"><div class="head"><h2>Profile</h2><span class="pill">Optional account</span></div><div class="form-grid"><div class="field"><label>Name</label><input id="pName" value="${U.esc(p.name||'')}"></div><div class="field"><label>Phone</label><input id="pPhone" value="${U.esc(p.phone||'')}"></div><div class="field full"><label>Address</label><textarea id="pAddress">${U.esc(p.defaultAddress||'')}</textarea></div><div id="profileLocationNote" class="full location-note">${U.esc(locationText())}</div>${location?'<div id="profileLocationMap" class="profile-location-map full"></div>':''}<button id="profileGpsBtn" class="btn full" type="button">Use GPS location</button><button id="saveProfileBtn" class="btn primary full">Save profile</button></div></div>`;
+    renderProfileLocationMap();
     document.getElementById('profileGpsBtn').onclick = locate;
     document.getElementById('saveProfileBtn').onclick = async () => {
       try {
@@ -431,15 +562,27 @@
     };
   }
 
-  function render(){
+  function renderProfileLocationMap(){
+    const element=document.getElementById('profileLocationMap');
+    if(!element||!location||!global.L)return;
+    if(maps.profile){try{maps.profile.remove();}catch{}maps.profile=null;}
+    maps.profile=L.map(element,{zoomControl:false,attributionControl:false,dragging:false,scrollWheelZoom:false,doubleClickZoom:false,touchZoom:false}).setView([location.lat,location.lng],15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(maps.profile);
+    L.circleMarker([location.lat,location.lng],{radius:9,color:'#102841',fillColor:'#1fc996',fillOpacity:1,weight:3}).addTo(maps.profile);
+    setTimeout(()=>maps.profile?.invalidateSize(),60);
+  }
+
+  function render(preserveFields=false){
     if(!currentUser || !document.getElementById('market')) return;
     updateBadge();
     const view = UI.activeView();
+    const fields = preserveFields ? captureViewFields(view) : [];
     if(view==='market') renderMarket();
     if(view==='cart') renderCart();
     if(view==='orders') renderOrders();
     if(view==='credit') renderCredit();
     if(view==='profile') renderProfile();
+    if(preserveFields) restoreViewFields(fields);
   }
 
   function locate(){
@@ -452,8 +595,37 @@
 
   function startApp(){
     UI.shell(); UI.bindNav(render); DB.init(UI.setStatus);
-    global.OmniConfig.collections.forEach(name => DB.subscribe(name, () => scheduleRender(name), {includeDeleted:true}));
+    liveUnsubscribers.forEach(unsubscribe => unsubscribe());
+    liveUnsubscribers = [];
+    CUSTOMER_COLLECTIONS.forEach(name => { state[name] = []; });
+    const scopeKey = customerId();
+    const ownedOrderIds = () => U.parseJson(localStorage.getItem('omni_v2_order_ids') || '[]', []);
+    const accepts = (name, row) => {
+      if(name === 'publicVendors') return true;
+      if(name === 'orders') return row.customerId === customerId() || ownedOrderIds().includes(row.id);
+      if(name === 'creditAccounts') {
+        const phone = customerProfile().phone || currentUser?.phone || '';
+        return row.customerId === customerId() || !!(phone && row.phone === phone);
+      }
+      if(name === 'vendorCreditSettings') return true;
+      if(name === 'customers') return row.id === customerId() || row.userId === (currentUser?.userId || currentUser?.id);
+      if(name === 'customerLocations') return row.customerId === customerId();
+      if(name === 'deliveryAssignments') return ownedOrderIds().includes(row.orderId) || rows('orders').some(order=>order.id===row.orderId);
+      return false;
+    };
+    CUSTOMER_COLLECTIONS.forEach(name => {
+      const unsubscribe = DB.subscribe(name, (_rows, changed) => {
+        if(name === 'customers' && changed && changed.deleted !== true) localStorage.setItem('omni_v2_customer_profile', JSON.stringify(changed));
+        if(name === 'deliveryAssignments' && UI.activeView?.() === 'orders') {
+          const ids=ownedOrderIds(),myOrders=rows('orders').filter(order=>ids.includes(order.id)||order.customerId===customerId()),assignment=activeCustomerDelivery(myOrders),order=assignment&&myOrders.find(item=>item.id===assignment.orderId);
+          if(assignment&&order&&document.getElementById('customerDeliveryMap')) { renderCustomerDeliveryMap(order,assignment); return; }
+        }
+        scheduleRender(name);
+      }, {includeDeleted:true, scopeKey, accept:row => accepts(name, row)});
+      liveUnsubscribers.push(unsubscribe);
+    });
     document.getElementById('search').oninput = () => scheduleRender('search');
+    document.getElementById('app').onfocusout = () => setTimeout(flushPendingRender, 0);
     document.getElementById('locateBtn').onclick = locate;
     document.getElementById('logoutBtn').onclick = () => {
       global.OmniAuth.clearSession();
@@ -461,12 +633,29 @@
       clearTimeout(renderTimer);
       clearInterval(presenceTimer);
       presenceTimer = null;
+      liveUnsubscribers.forEach(unsubscribe => unsubscribe());
+      liveUnsubscribers = [];
+      pendingRenders.clear();
       resetMarketMap();
+      resetDeliveryMap();
+      if(maps.profile){try{maps.profile.remove();}catch{}maps.profile=null;}
       renderAuthGate();
     };
     const userMode = document.getElementById('userMode');
     if(userMode) userMode.textContent = currentUser?.role === 'customer' ? `Customer · ${currentUser.displayName || currentUser.username || ''}` : 'Guest mode';
     window.onresize = () => Object.values(maps).forEach(map => map?.invalidateSize());
+    document.onkeydown = event => {
+      if(event.key !== 'Escape') return;
+      const card = document.getElementById('marketMapCard');
+      if(card?.classList.contains('map-fullscreen')) card.classList.remove('map-fullscreen');
+      if(dropMode) {
+        dropMode = false;
+        const button = document.getElementById('dropPinBtn');
+        if(button) button.textContent = 'Drop pin';
+      }
+      maps.market?.invalidateSize();
+      flushPendingRender();
+    };
     startPresenceSync();
     render();
   }
