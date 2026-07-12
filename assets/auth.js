@@ -54,7 +54,7 @@
     const cleanName = String(username || phone || '').trim().toLowerCase();
     if(!cleanName || !password) throw new Error('Username and password are required.');
     const id = userIdFor(cleanName);
-    const existing = await new Promise(resolve => global.OmniDB.node('users', id).once(data => resolve(data ? global.OmniUtils.cleanGun(data) : null)));
+    const existing = await global.OmniDB.get('users', id, 5000);
     if(existing && existing.deleted !== true) throw new Error('This username already exists.');
     const user = {id, username:cleanName, displayName:name || cleanName, phone:phone || '', role:'customer', customerId, passwordHash:await hashPassword(password), active:true, deleted:false, createdAt:Date.now(), lastLoginAt:Date.now()};
     await global.OmniDB.put('users', id, user, {userId:id});
@@ -66,7 +66,7 @@
   async function login(username, password){
     const cleanName = String(username || '').trim().toLowerCase();
     const id = userIdFor(cleanName);
-    const user = await new Promise(resolve => global.OmniDB.node('users', id).once(data => resolve(data ? {...global.OmniUtils.cleanGun(data), id:data.id || id} : null)));
+    const user = await global.OmniDB.get('users', id, 6500);
     if(!user || user.deleted === true || user.active === false) throw new Error('Account was not found.');
     if(!user.passwordHash || user.passwordHash !== await hashPassword(password)) throw new Error('Password is incorrect.');
     const next = {...user, lastLoginAt:Date.now()};

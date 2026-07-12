@@ -18,7 +18,7 @@
   let mapInteractionTimer = null;
   let liveUnsubscribers = [];
   const pendingRenders = new Set();
-  const CUSTOMER_COLLECTIONS = ['publicVendors','orders','creditAccounts','vendorCreditSettings','customers','customerLocations','deliveryAssignments'];
+  const CUSTOMER_COLLECTIONS = ['publicVendors','products','orders','creditAccounts','vendorCreditSettings','customers','customerLocations','deliveryAssignments'];
 
   function customerId(){
     if(currentUser?.customerId) return currentUser.customerId;
@@ -150,7 +150,7 @@
   function viewUsesCollection(collection){
     const view = UI.activeView?.() || 'market';
     const dependencies = {
-      market: new Set(['publicVendors']),
+      market: new Set(['publicVendors','products']),
       cart: new Set(),
       orders: new Set(['orders','deliveryAssignments']),
       credit: new Set(['creditAccounts','vendorCreditSettings','publicVendors']),
@@ -604,6 +604,7 @@
     const ownedOrderIds = () => U.parseJson(localStorage.getItem('omni_v2_order_ids') || '[]', []);
     const accepts = (name, row) => {
       if(name === 'publicVendors') return true;
+      if(name === 'products') return row.active !== false;
       if(name === 'orders') return row.customerId === customerId() || ownedOrderIds().includes(row.id);
       if(name === 'creditAccounts') {
         const phone = customerProfile().phone || currentUser?.phone || '';
