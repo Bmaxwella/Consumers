@@ -198,9 +198,11 @@
   function rows(name){ return (state[name] || []).filter(row => row.deleted !== true); }
 
   function parseProducts(vendor){
+    const canonical = rows('products').filter(product => product.vendorId === vendor.id);
+    if(DB.state.hydrated.has('products')) return canonical;
     const mirrored = U.parseJson(vendor.products || '[]', []);
     if(Array.isArray(mirrored) && mirrored.length) return mirrored.map(p => ({...p, vendorId:vendor.id}));
-    return rows('products').filter(p => p.vendorId === vendor.id && p.active !== false);
+    return canonical;
   }
 
   function productImages(product={}){
@@ -604,7 +606,7 @@
     const ownedOrderIds = () => U.parseJson(localStorage.getItem('omni_v2_order_ids') || '[]', []);
     const accepts = (name, row) => {
       if(name === 'publicVendors') return true;
-      if(name === 'products') return row.active !== false;
+      if(name === 'products') return true;
       if(name === 'orders') return row.customerId === customerId() || ownedOrderIds().includes(row.id);
       if(name === 'creditAccounts') {
         const phone = customerProfile().phone || currentUser?.phone || '';
