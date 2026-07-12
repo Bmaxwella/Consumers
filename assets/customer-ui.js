@@ -21,7 +21,7 @@
           <button data-view="credit">Credit</button>
           <button data-view="profile">Profile</button>
         </nav>
-        <div class="sync"><span id="syncDot" class="dot"></span><span id="syncText">Connecting securely</span></div>
+        <div class="sync"><span id="syncDot" class="dot"></span><span id="syncText">Connecting securely</span><small class="relay-url">GUN relay: ${U.esc(global.OmniConfig.peers.join(', '))}</small></div>
       </aside>
       <main class="main">
         <div class="mobile-tabs" data-nav><button class="btn primary" data-view="market">Market</button><button class="btn" data-view="cart">Cart</button><button class="btn" data-view="orders">Orders</button><button class="btn" data-view="credit">Credit</button><button class="btn" data-view="profile">Profile</button></div>
@@ -51,7 +51,14 @@
   }
 
   function activeView(){ return document.querySelector('.view.active')?.id || 'market'; }
-  function setStatus(status){ document.getElementById('syncDot')?.classList.toggle('online', status.online); const text=document.getElementById('syncText'); if(text) text.textContent=status.text || 'Connecting'; }
+  function setStatus(status){
+    document.getElementById('syncDot')?.classList.toggle('online', status.online);
+    document.getElementById('authRelayDot')?.classList.toggle('online', status.online);
+    const text=document.getElementById('syncText');
+    const authText=document.getElementById('authRelayState');
+    if(text) text.textContent=status.text || 'Connecting';
+    if(authText) authText.textContent=status.online ? 'Connected' : (status.text || 'Connecting');
+  }
   function table(rows, columns){
     if(!rows.length) return '<div class="card empty">No records found</div>';
     return `<div class="table-wrap"><table class="table"><thead><tr>${columns.map(c=>`<th>${U.esc(c.label)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${columns.map(c=>`<td>${U.esc(c.format?c.format(row):row[c.key])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;

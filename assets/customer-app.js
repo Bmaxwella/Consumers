@@ -57,13 +57,13 @@
         </div>
       </div>
       <div class="auth-form-card">
+        <div class="auth-form-intro"><span class="eyebrow">Welcome</span><h2>Sign in or continue your way</h2><p>Use an account across devices, or shop immediately as a guest.</p></div>
         <div class="auth-tabs">
-          <button class="btn primary active" data-auth-tab="signup">Sign up</button>
-          <button class="btn" data-auth-tab="login">Login</button>
+          <button class="btn primary active" data-auth-tab="login">Sign in</button>
+          <button class="btn" data-auth-tab="signup">Create account</button>
           <button class="btn" data-auth-tab="guest">Guest</button>
         </div>
-        <p class="muted">Choose how you want to continue. Accounts keep profile and credit data across devices.</p>
-        <form id="signupPanel" class="auth-panel active">
+        <form id="signupPanel" class="auth-panel">
           <div class="form-grid">
             <div class="field"><label>Name</label><input id="suName" autocomplete="name" required></div>
             <div class="field"><label>Phone</label><input id="suPhone" inputmode="tel" autocomplete="tel" required></div>
@@ -72,7 +72,7 @@
           </div>
           <button class="btn primary">Create customer account</button>
         </form>
-        <form id="loginPanel" class="auth-panel">
+        <form id="loginPanel" class="auth-panel active">
           <div class="form-grid">
             <div class="field"><label>Username</label><input id="liUser" autocomplete="username" required></div>
             <div class="field"><label>Password</label><input id="liPass" type="password" autocomplete="current-password" required></div>
@@ -83,8 +83,10 @@
           <p class="muted">Continue without an account. Orders placed on this device can still be tracked here.</p>
           <button id="guestBtn" class="btn primary">Continue as guest</button>
         </div>
+        <div class="relay-diagnostic"><span id="authRelayDot" class="dot"></span><div><b id="authRelayState">Connecting</b><small>GUN relay: ${U.esc(global.OmniConfig.peers.join(', '))}</small></div></div>
       </div>
     </section></main>`;
+    UI.setStatus(DB.state.status);
     document.querySelectorAll('[data-auth-tab]').forEach(btn => btn.onclick = () => {
       document.querySelectorAll('[data-auth-tab]').forEach(item => item.classList.toggle('active', item === btn));
       document.querySelectorAll('.auth-panel').forEach(panel => panel.classList.toggle('active', panel.id === `${btn.dataset.authTab}Panel`));
