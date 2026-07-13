@@ -82,7 +82,7 @@
           <p class="muted">Continue without an account. Orders placed on this device can still be tracked here.</p>
           <button id="guestBtn" class="btn primary">Continue as guest</button>
         </div>
-        <div class="relay-diagnostic"><span id="authRelayDot" class="dot"></span><div><b id="authRelayState">Connecting</b><small>GUN relay: ${U.esc(global.OmniConfig.peers.join(', '))}</small></div></div>
+        <div class="relay-diagnostic"><span id="authRelayDot" class="dot"></span><div><b id="authRelayState">Connecting securely</b><small>Secure cloud service</small></div></div>
       </div>
     </section></main>`;
     UI.setStatus(DB.state.status);

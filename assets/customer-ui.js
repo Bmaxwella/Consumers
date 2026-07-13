@@ -23,7 +23,7 @@
           <button data-view="credit">Credit</button>
           <button data-view="profile">Profile</button>
         </nav>
-        <div class="sync"><span id="syncDot" class="dot"></span><span id="syncText">Connecting securely</span><small class="relay-url">GUN relay: ${U.esc(global.OmniConfig.peers.join(', '))}</small></div>
+        <div class="sync"><span id="syncDot" class="dot"></span><span id="syncText">Connecting securely</span><small class="relay-url">Secure cloud service</small></div>
       </aside>
       <main class="main">
         <div class="mobile-tabs" data-nav><button class="btn primary" data-view="market">Market</button><button class="btn" data-view="cart">Cart</button><button class="btn" data-view="orders">Orders</button><button class="btn" data-view="credit">Credit</button><button class="btn" data-view="profile">Profile</button></div>
