@@ -2,26 +2,20 @@
   'use strict';
 
   const KEY = 'omni_v2_customer_session';
-  const LEGACY_KEY = 'omni_v2_session';
   const ALLOWED_ROLES = new Set(['customer','guest']);
 
   function savedSession(){
-    const saved = global.OmniUtils.parseJson(localStorage.getItem(KEY) || 'null', null);
+    const saved = global.OmniUtils.parseJson(sessionStorage.getItem(KEY) || 'null', null);
     if(saved && ALLOWED_ROLES.has(saved.role)) return saved;
-    const legacy = global.OmniUtils.parseJson(localStorage.getItem(LEGACY_KEY) || 'null', null);
-    if(!legacy || !ALLOWED_ROLES.has(legacy.role)) return null;
-    localStorage.setItem(KEY, JSON.stringify(legacy));
-    return legacy;
+    return null;
   }
 
   function saveSession(user){
-    localStorage.setItem(KEY, JSON.stringify({userId:user.id, id:user.id, username:user.username, displayName:user.displayName || user.username, role:user.role, vendorId:user.vendorId || '', customerId:user.customerId || '', guest:user.role === 'guest', at:Date.now()}));
+    sessionStorage.setItem(KEY, JSON.stringify({userId:user.id, id:user.id, username:user.username, displayName:user.displayName || user.username, role:user.role, vendorId:user.vendorId || '', customerId:user.customerId || '', guest:user.role === 'guest', at:Date.now()}));
   }
 
   function clearSession(){
-    localStorage.removeItem(KEY);
-    const legacy = global.OmniUtils.parseJson(localStorage.getItem(LEGACY_KEY) || 'null', null);
-    if(legacy && ALLOWED_ROLES.has(legacy.role)) localStorage.removeItem(LEGACY_KEY);
+    sessionStorage.removeItem(KEY);
   }
 
   function userIdFor(username){
@@ -56,7 +50,8 @@
     const id = userIdFor(cleanName);
     const existing = await global.OmniDB.get('users', id, 5000);
     if(existing && existing.deleted !== true) throw new Error('This username already exists.');
-    const user = {id, username:cleanName, displayName:name || cleanName, phone:phone || '', role:'customer', customerId, passwordHash:await hashPassword(password), active:true, deleted:false, createdAt:Date.now(), lastLoginAt:Date.now()};
+    const resolvedCustomerId = customerId || `customer_${id.replace(/^user_/,'')}`;
+    const user = {id, username:cleanName, displayName:name || cleanName, phone:phone || '', role:'customer', customerId:resolvedCustomerId, passwordHash:await hashPassword(password), active:true, deleted:false, createdAt:Date.now(), lastLoginAt:Date.now()};
     await global.OmniDB.put('users', id, user, {userId:id});
     saveSession(user);
     await global.OmniDB.event('customer_signed_up', 'user', id, {summary:`${cleanName} signed up`, role:'customer'}, {userId:id});
@@ -77,9 +72,8 @@
   }
 
   async function continueAsGuest(customerId){
-    const id = localStorage.getItem('omni_v2_guest_user_id') || global.OmniUtils.uid('guest');
-    localStorage.setItem('omni_v2_guest_user_id', id);
-    const user = {id, username:id, displayName:'Guest', role:'guest', customerId, active:true, deleted:false, lastSeenAt:Date.now()};
+    const id = global.OmniUtils.uid('guest');
+    const user = {id, username:id, displayName:'Guest', role:'guest', customerId:customerId || `customer_${id}`, active:true, deleted:false, lastSeenAt:Date.now()};
     await global.OmniDB.put('users', id, user, {userId:id});
     saveSession(user);
     await global.OmniDB.event('guest_continued', 'user', id, {summary:'Guest continued to marketplace', role:'guest'}, {userId:id});

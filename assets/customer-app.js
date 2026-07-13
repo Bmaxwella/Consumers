@@ -9,7 +9,7 @@
   let deliveryDriverMarker = null;
   let deliveryDestinationMarker = null;
   let deliveryRoute = null;
-  let location = U.parseJson(localStorage.getItem('omni_v2_customer_location') || 'null', null);
+  let location = null;
   let dropMode = false;
   let placingOrder = false;
   let currentUser = null;
@@ -22,20 +22,17 @@
 
   function customerId(){
     if(currentUser?.customerId) return currentUser.customerId;
-    if(currentUser?.role === 'customer' && currentUser.userId) return `customer_${currentUser.userId.replace(/^user_/,'')}`;
-    let id = localStorage.getItem('omni_v2_customer_id');
-    if(!id){ id = U.uid('customer'); localStorage.setItem('omni_v2_customer_id', id); }
-    return id;
+    const id = currentUser?.userId || currentUser?.id || '';
+    return id ? `customer_${id.replace(/^user_/,'')}` : '';
   }
 
   function customerProfile(){
-    return U.parseJson(localStorage.getItem('omni_v2_customer_profile') || '{}', {});
+    return rows('customers').find(row => row.id === customerId() || row.userId === (currentUser?.userId || currentUser?.id)) || {};
   }
 
   async function saveCustomerProfile(profile){
     const row = {...profile, id:customerId(), userId:currentUser?.userId || currentUser?.id || customerId(), active:true};
     if(location) { row.lat = location.lat; row.lng = location.lng; row.locationSource = location.source || 'manual'; }
-    localStorage.setItem('omni_v2_customer_profile', JSON.stringify(row));
     await DB.put('customers', row.id, row, {userId:row.userId || row.id});
     return row;
   }
@@ -310,7 +307,6 @@
 
   function setLocation(next){
     location = next;
-    localStorage.setItem('omni_v2_customer_location', JSON.stringify(next));
     if(maps.market) { maps.market._omniUserMoved = false; maps.market._omniAutoFramed = false; }
     if(UI.activeView?.() === 'market') renderMarket();
     ['checkoutLocationNote','profileLocationNote'].forEach(id => {
@@ -413,7 +409,7 @@
       };
     }
     document.getElementById('clearLocationBtn').disabled = !location;
-    document.getElementById('clearLocationBtn').onclick = () => { location = null; localStorage.removeItem('omni_v2_customer_location'); const profile={...customerProfile(),lat:0,lng:0,locationSource:''}; localStorage.setItem('omni_v2_customer_profile',JSON.stringify(profile)); DB.put('customers',customerId(),profile,{userId:currentUser?.userId||currentUser?.id||customerId()}).catch(()=>{}); if(maps.market){ maps.market._omniAutoFramed = false; maps.market._omniUserMoved = false; } render(); };
+    document.getElementById('clearLocationBtn').onclick = () => { location = null; const profile={...customerProfile(),id:customerId(),userId:currentUser?.userId||currentUser?.id||customerId(),lat:0,lng:0,locationSource:''}; DB.put('customers',customerId(),profile,{userId:profile.userId}).catch(()=>{}); if(maps.market){ maps.market._omniAutoFramed = false; maps.market._omniUserMoved = false; } render(); };
     document.getElementById('locationNote').textContent = locationText();
     document.getElementById('vendorCount').textContent = `${vendors.length} vendor${vendors.length === 1 ? '' : 's'}`;
     document.getElementById('vendorList').innerHTML = vendors.length ? vendors.map(vendorRow).join('') : '<div class="empty">No approved vendors found.</div>';
@@ -454,11 +450,8 @@
 
   function renderCart(){
     const p = customerProfile();
-    const draft = U.parseJson(localStorage.getItem('omni_v2_checkout_draft') || '{}', {});
-    const payment = draft.paymentMethod || 'cash';
-    document.getElementById('cart').innerHTML = `<div class="grid split"><div class="card pad"><div class="head"><h2>Your Cart</h2><span class="pill">${Cart.lines.length} lines</span></div>${Cart.lines.map(line=>`<div class="cart-line"><span>${U.esc(line.name)} x ${line.qty}</span><button class="btn small danger" data-remove="${U.esc(line.productId)}">−</button><b>${U.money(line.price*line.qty)}</b></div>`).join('') || '<div class="empty">Cart is empty</div>'}<div class="total"><span>Total</span><span>${U.money(Cart.total())}</span></div></div><div class="card pad"><h2>Checkout</h2><div class="form"><div class="field"><label>Name</label><input id="coName" autocomplete="name" value="${U.esc(draft.name ?? p.name ?? '')}"></div><div class="field"><label>Phone</label><input id="coPhone" inputmode="tel" autocomplete="tel" value="${U.esc(draft.phone ?? p.phone ?? '')}"></div><div class="field"><label>Address</label><textarea id="coAddress">${U.esc(draft.defaultAddress ?? p.defaultAddress ?? '')}</textarea></div><div id="checkoutLocationNote" class="location-note">${U.esc(locationText())}</div><div class="toolbar"><button id="checkoutGpsBtn" class="btn" type="button">Use GPS</button><button id="checkoutPinBtn" class="btn ghost" type="button">Drop pin on map</button></div><select id="coPayment" class="input"><option value="cash" ${payment==='cash'?'selected':''}>Cash</option><option value="benefit" ${payment==='benefit'?'selected':''}>Benefit</option><option value="credit" ${payment==='credit'?'selected':''}>Credit</option></select><button id="placeOrderBtn" class="btn primary">Place order</button></div></div></div>`;
-    const saveDraft = () => localStorage.setItem('omni_v2_checkout_draft', JSON.stringify({name:document.getElementById('coName').value, phone:document.getElementById('coPhone').value, defaultAddress:document.getElementById('coAddress').value, paymentMethod:document.getElementById('coPayment').value}));
-    ['coName','coPhone','coAddress','coPayment'].forEach(id => document.getElementById(id).addEventListener('input', saveDraft));
+    const payment = 'cash';
+    document.getElementById('cart').innerHTML = `<div class="grid split"><div class="card pad"><div class="head"><h2>Your Cart</h2><span class="pill">${Cart.lines.length} lines</span></div>${Cart.lines.map(line=>`<div class="cart-line"><span>${U.esc(line.name)} x ${line.qty}</span><button class="btn small danger" data-remove="${U.esc(line.productId)}">−</button><b>${U.money(line.price*line.qty)}</b></div>`).join('') || '<div class="empty">Cart is empty</div>'}<div class="total"><span>Total</span><span>${U.money(Cart.total())}</span></div></div><div class="card pad"><h2>Checkout</h2><div class="form"><div class="field"><label>Name</label><input id="coName" autocomplete="name" value="${U.esc(p.name || '')}"></div><div class="field"><label>Phone</label><input id="coPhone" inputmode="tel" autocomplete="tel" value="${U.esc(p.phone || '')}"></div><div class="field"><label>Address</label><textarea id="coAddress">${U.esc(p.defaultAddress || '')}</textarea></div><div id="checkoutLocationNote" class="location-note">${U.esc(locationText())}</div><div class="toolbar"><button id="checkoutGpsBtn" class="btn" type="button">Use GPS</button><button id="checkoutPinBtn" class="btn ghost" type="button">Drop pin on map</button></div><select id="coPayment" class="input"><option value="cash" ${payment==='cash'?'selected':''}>Cash</option><option value="benefit">Benefit</option><option value="credit">Credit</option></select><button id="placeOrderBtn" class="btn primary">Place order</button></div></div></div>`;
     document.querySelectorAll('[data-remove]').forEach(btn => btn.onclick = () => { Cart.remove(btn.dataset.remove); updateBadge(); renderCart(); });
     document.getElementById('checkoutGpsBtn').onclick = locate;
     document.getElementById('checkoutPinBtn').onclick = () => { document.querySelector('[data-view="market"]').click(); setTimeout(() => document.getElementById('dropPinBtn')?.click(), 80); };
@@ -495,8 +488,7 @@
       await DB.put('orders', orderId, order, {userId:profile.id, vendorId});
       for(const line of Cart.lines) await DB.put('orderItems', U.uid('item'), {orderId, vendorId, productId:line.productId, nameSnapshot:line.name, priceSnapshot:line.price, qty:line.qty, total:line.price*line.qty}, {userId:profile.id, vendorId});
       await DB.event('customer_order_created','order',orderId,{vendorId, summary:`Customer order ${U.money(order.total)}`},{userId:profile.id, vendorId});
-      const ids = U.parseJson(localStorage.getItem('omni_v2_order_ids') || '[]', []); ids.push(orderId); localStorage.setItem('omni_v2_order_ids', JSON.stringify(ids));
-      Cart.clear(); localStorage.removeItem('omni_v2_checkout_draft'); updateBadge(); UI.toast('Order placed and synced','ok'); renderOrders();
+      Cart.clear(); updateBadge(); UI.toast('Order placed and synced','ok'); renderOrders();
       document.querySelector('[data-view="orders"]').click();
     } catch(error) {
       UI.toast(error.message || 'Order could not be saved','bad');
@@ -526,8 +518,7 @@
   }
 
   function renderOrders(){
-    const ids = U.parseJson(localStorage.getItem('omni_v2_order_ids') || '[]', []);
-    const myOrders = rows('orders').filter(o => ids.includes(o.id) || o.customerId === customerId()).sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0));
+    const myOrders = rows('orders').filter(o => o.customerId === customerId()).sort((a,b)=>Number(b.createdAt||0)-Number(a.createdAt||0));
     const assignment=activeCustomerDelivery(myOrders),trackedOrder=assignment&&myOrders.find(order=>order.id===assignment.orderId);
     if(!assignment) resetDeliveryMap();
     document.getElementById('orders').innerHTML = `${assignment&&trackedOrder?`<section class="card pad customer-delivery-card"><div class="head"><div><span class="product-category">Live delivery</span><h2>${U.esc(assignment.driverName||'Your driver is on the way')}</h2><p class="muted">${assignment.driverPhone?`Driver phone: ${U.esc(assignment.driverPhone)} · `:''}${assignment.locationUpdatedAt?`Updated ${new Date(Number(assignment.locationUpdatedAt)).toLocaleTimeString()}`:'Waiting for the first location update'}</p></div><span class="pill ok">Out for delivery</span></div><div id="customerDeliveryMap" class="customer-delivery-map"></div></section>`:''}<div class="card pad"><div class="head"><h2>My Orders</h2></div>${UI.table(myOrders, [{key:'id',label:'Order'}, {key:'status',label:'Status'}, {key:'paymentMethod',label:'Payment'}, {key:'total',label:'Total',format:r=>U.money(r.total)}, {key:'customerAddress',label:'Address'}, {key:'createdAt',label:'Placed',format:r=>r.createdAt?new Date(Number(r.createdAt)).toLocaleString():'-'}])}</div>`;
@@ -601,11 +592,10 @@
     liveUnsubscribers = [];
     CUSTOMER_COLLECTIONS.forEach(name => { state[name] = []; });
     const scopeKey = customerId();
-    const ownedOrderIds = () => U.parseJson(localStorage.getItem('omni_v2_order_ids') || '[]', []);
     const accepts = (name, row) => {
       if(name === 'publicVendors') return true;
       if(name === 'products') return true;
-      if(name === 'orders') return row.customerId === customerId() || ownedOrderIds().includes(row.id);
+      if(name === 'orders') return row.customerId === customerId();
       if(name === 'creditAccounts') {
         const phone = customerProfile().phone || currentUser?.phone || '';
         return row.customerId === customerId() || !!(phone && row.phone === phone);
@@ -613,14 +603,16 @@
       if(name === 'vendorCreditSettings') return true;
       if(name === 'customers') return row.id === customerId() || row.userId === (currentUser?.userId || currentUser?.id);
       if(name === 'customerLocations') return row.customerId === customerId();
-      if(name === 'deliveryAssignments') return ownedOrderIds().includes(row.orderId) || rows('orders').some(order=>order.id===row.orderId);
+      if(name === 'deliveryAssignments') return rows('orders').some(order=>order.id===row.orderId);
       return false;
     };
     CUSTOMER_COLLECTIONS.forEach(name => {
       const unsubscribe = DB.subscribe(name, (_rows, changed) => {
-        if(name === 'customers' && changed && changed.deleted !== true) localStorage.setItem('omni_v2_customer_profile', JSON.stringify(changed));
+        if(name === 'customers' && changed && changed.deleted !== true && changed.id === customerId()) {
+          location = Number(changed.lat) && Number(changed.lng) ? {lat:Number(changed.lat),lng:Number(changed.lng),source:changed.locationSource || 'database'} : null;
+        }
         if(name === 'deliveryAssignments' && UI.activeView?.() === 'orders') {
-          const ids=ownedOrderIds(),myOrders=rows('orders').filter(order=>ids.includes(order.id)||order.customerId===customerId()),assignment=activeCustomerDelivery(myOrders),order=assignment&&myOrders.find(item=>item.id===assignment.orderId);
+          const myOrders=rows('orders').filter(order=>order.customerId===customerId()),assignment=activeCustomerDelivery(myOrders),order=assignment&&myOrders.find(item=>item.id===assignment.orderId);
           if(assignment&&order&&document.getElementById('customerDeliveryMap')) { renderCustomerDeliveryMap(order,assignment); return; }
         }
         scheduleRender(name);
@@ -663,11 +655,23 @@
     render();
   }
 
-  function boot(){
+  async function boot(){
     DB.init(UI.setStatus);
-    currentUser = global.OmniAuth.savedSession();
-    if(currentUser) startApp();
-    else renderAuthGate();
+    const session = global.OmniAuth.savedSession();
+    if(session?.userId) {
+      try {
+        const user = await DB.get('users', session.userId, 8000);
+        if(user && user.deleted !== true && user.active !== false && ['customer','guest'].includes(user.role)) {
+          currentUser = {...session, ...user, userId:user.id};
+          global.OmniAuth.saveSession(currentUser);
+          startApp();
+          return;
+        }
+      } catch {}
+      global.OmniAuth.clearSession();
+    }
+    currentUser = null;
+    renderAuthGate();
   }
 
   boot();

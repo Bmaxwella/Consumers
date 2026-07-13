@@ -1,8 +1,8 @@
 (function(global){
   'use strict';
   const Cart = {
-    lines: JSON.parse(localStorage.getItem('omni_v2_cart') || '[]'),
-    save(){ localStorage.setItem('omni_v2_cart', JSON.stringify(Cart.lines)); },
+    lines: [],
+    save(){},
     add(product, vendor){
       if(Cart.lines.length && Cart.lines[0].vendorId !== product.vendorId) {
         if(!confirm('Your cart has items from another vendor. Clear it?')) return false;
