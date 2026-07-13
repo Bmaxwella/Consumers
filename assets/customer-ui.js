@@ -11,7 +11,9 @@
   }
 
   function shell(){
-    document.getElementById('app').innerHTML = `
+    const app = document.getElementById('app');
+    app.className = 'app';
+    app.innerHTML = `
       <aside class="side">
         <div class="brand"><div class="brand-mark">OM</div><div>OMNI<br><span class="muted">MARKET</span></div></div>
         <nav class="nav" data-nav>

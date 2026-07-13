@@ -43,7 +43,9 @@
   function renderAuthGate(){
     clearInterval(presenceTimer);
     presenceTimer = null;
-    document.getElementById('app').innerHTML = `<main class="auth-screen"><section class="auth-card">
+    const app = document.getElementById('app');
+    app.className = 'auth-root';
+    app.innerHTML = `<main class="auth-screen"><section class="auth-card">
       <div class="auth-hero">
         <div class="brand-mark">OM</div>
         <div>
@@ -198,11 +200,7 @@
   function rows(name){ return (state[name] || []).filter(row => row.deleted !== true); }
 
   function parseProducts(vendor){
-    const canonical = rows('products').filter(product => product.vendorId === vendor.id);
-    if(DB.state.hydrated.has('products')) return canonical;
-    const mirrored = U.parseJson(vendor.products || '[]', []);
-    if(Array.isArray(mirrored) && mirrored.length) return mirrored.map(p => ({...p, vendorId:vendor.id}));
-    return canonical;
+    return rows('products').filter(product => product.vendorId === vendor.id);
   }
 
   function productImages(product={}){
